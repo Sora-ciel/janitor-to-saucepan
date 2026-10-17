@@ -1,0 +1,34 @@
+# Session du navigateur piloté — contient des cookies de connexion actifs.
+browser_state/
+
+.venv/
+.venv-linux/
+__pycache__/
+*.pyc
+
+# État local : bots déjà synchronisés, réglages, journal, avatars en cache.
+# saucepan_tags.json est en revanche nécessaire à l'exécution.
+data/avatars/
+data/seen_bots.json
+data/settings.json
+data/sync.log
+data/sync.lock
+data/preview_overflows.json
+data/*.backup.json
+data/_*.json
+
+# Mise en forme personnelle (signature, liens) : propre à chaque utilisateur.
+# Les valeurs neutres livrées à tous sont dans naosnatcher/housestyle.py.
+data/housestyle.json
+
+# JSON produits à chaque synchronisation.
+exports/
+
+# Construction de Naosnatcher.exe (python build.py).
+build/
+dist/
+cards/
+
+# Captures des sites et échantillons : documentation locale, jamais publiée
+# (pages enregistrées connecté, identifiants de compte, scripts de tiers).
+references/

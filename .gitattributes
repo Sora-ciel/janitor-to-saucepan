@@ -1,0 +1,7 @@
+# Le dossier est partagé entre Windows et Linux : les scripts shell doivent
+# garder des fins de ligne LF, sinon bash les rejette (retour chariot en trop).
+*.sh  text eol=lf
+*.bat text eol=crlf
+*.py  text eol=lf
+*.png binary
+*.ico binary

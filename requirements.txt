@@ -1,0 +1,11 @@
+# Interface de contrôle (fenêtre, planification, journal).
+PyQt6>=6.7
+
+# Pilotage du navigateur de l'utilisateur, par CDP.
+playwright>=1.40
+
+# Téléchargement des avatars depuis le CDN de Janitor.
+requests>=2.31
+
+# Cartes de personnage : lecture de l'avatar (webp) et écriture du PNG.
+Pillow>=10.0
