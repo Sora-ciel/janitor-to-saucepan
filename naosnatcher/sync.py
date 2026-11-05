@@ -30,19 +30,20 @@ def season_excluded(name, settings):
     return False
 
 
-def full_sync(settings, log, first_run_seed=False, dry_run=False):
+def full_sync(settings, log, first_run_seed=False, dry_run=False, forced=None):
     """Un cycle, à condition qu'aucun autre ne tourne déjà (voir `_full_sync`)."""
     if not state.acquire_run_lock():
         log(state.log("Un autre cycle est déjà en cours — celui-ci est annulé."))
         return {"new": 0, "ok": 0, "failed": 0, "skipped": 0, "details": [],
                 "dry_run": dry_run, "locked": True}
     try:
-        return _full_sync(settings, log, first_run_seed, dry_run)
+        return _full_sync(settings, log, first_run_seed, dry_run, forced)
     finally:
         state.release_run_lock()
 
 
-def _full_sync(settings, log, first_run_seed=False, dry_run=False):
+def _full_sync(settings, log, first_run_seed=False, dry_run=False, forced=None):
+    """`forced` : identifiants de bots à envoyer tels quels (voir sync_urls)."""
     """Une synchronisation complète.
 
     `first_run_seed` : enregistre les bots existants comme connus sans rien
@@ -79,7 +80,8 @@ def _full_sync(settings, log, first_run_seed=False, dry_run=False):
                "dry_run": dry_run}
 
     with BrowserSession(log, settings.get("browser_path")) as driver:
-        characters = janitor.list_characters(driver, list_url, log)
+        characters = ([{"id": cid, "name": cid} for cid in forced] if forced
+                      else janitor.list_characters(driver, list_url, log))
 
         if first_run_seed:
             state.seed_all([c["id"] for c in characters])
@@ -90,7 +92,7 @@ def _full_sync(settings, log, first_run_seed=False, dry_run=False):
 
         # Bots créés lors d'un cycle précédent mais restés à mi-chemin de la
         # publication : on les republie, sans jamais les recréer.
-        if not dry_run:
+        if not dry_run and not forced:
             for cid, entry in state.awaiting_publish().items():
                 label = entry.get("name") or cid
                 level = entry.get("access_level") or "private"
@@ -116,75 +118,82 @@ def _full_sync(settings, log, first_run_seed=False, dry_run=False):
         daily_limit = None if raw_limit in (None, "") else int(raw_limit)
         pause = float(settings.get("pause_between_bots", 20) or 0)
 
-        pending = [c for c in characters if not state.is_seen(c["id"])]
-
-        # Les sondages, annonces et cartes de mise à jour ne sont pas des
-        # personnages : on les reconnaît à leur nombre de jetons dérisoire.
-        # Le compte figure sur la carte, donc filtrer ici évite d'ouvrir des
-        # centaines de fiches pour rien.
-        if min_tokens:
-            too_small = [c for c in pending
-                         if c.get("tokens") is not None and c["tokens"] < min_tokens]
-            pending = [c for c in pending
-                       if c.get("tokens") is None or c["tokens"] >= min_tokens]
-            if too_small:
-                log(f"{len(too_small)} élément(s) sous {min_tokens} jetons "
-                    "ignoré(s) — sondages, annonces, brouillons.")
-                results["too_small"] = len(too_small)
-
-        # Ne transférer que ce qui est déjà public sur Janitor. Un bot dont la
-        # visibilité est inconnue est **conservé** : l'écarter reviendrait à
-        # perdre silencieusement un bot légitime, et de toute façon la
-        # conversion ne publie que sur un `is_public` explicitement vrai.
-        if settings.get("public_only", True):
-            private = [c for c in pending if c.get("is_public") is False]
-            pending = [c for c in pending if c.get("is_public") is not False]
-            if private:
-                log(f"{len(private)} bot(s) privé(s) sur Janitor ignoré(s).")
-                results["private"] = len(private)
-
-        if not pending:
-            log("Aucun nouveau bot à synchroniser.")
-            return results
-
-        excluded = [c for c in pending if season_excluded(c.get("name"), settings)]
-        if excluded:
-            pending = [c for c in pending if c not in excluded]
-            log(f"{len(excluded)} bot(s) écarté(s) par les limites de saison : "
-                + ", ".join(c["name"][:40] for c in excluded[:4])
-                + (" …" if len(excluded) > 4 else ""))
-            results["season_excluded"] = len(excluded)
-
-        # Du plus récent au plus ancien : les bots récents sont ceux qu'on veut
-        # voir arriver en premier sur Saucepan. Les fiches sans date passent en
-        # dernier plutôt que d'être écartées.
-        pending.sort(key=lambda c: c.get("created_at") or "", reverse=True)
-
-        results["new"] = len(pending)
-
-        # On n'envoie qu'un petit lot par exécution : mieux vaut étaler sur
-        # plusieurs jours que risquer une limitation côté Saucepan. Les autres
-        # restent en file et repartiront au prochain passage.
-        # Un plafond de 0 signifie « aucun bot », pas « sans limite » : c'est
-        # la lecture attendue de --limit 0, et l'inverse enverrait la file
-        # entière d'un coup. Seule l'absence de valeur lève le plafond.
-        queue = pending
-        if daily_limit is not None and daily_limit >= 0:
-            queue = pending[:daily_limit]
-            results["queued"] = len(pending) - len(queue)
-
-        if not queue:
-            log(f"{len(pending)} bot(s) en attente, plafond du jour à "
-                f"{daily_limit} — rien à envoyer.")
-            return results
-
-        if results.get("queued"):
-            log(f"{len(pending)} bot(s) en attente — {len(queue)} traité(s) "
-                f"aujourd'hui, {results['queued']} pour les jours suivants."
+        if forced:
+            # Envoi manuel : ni registre, ni filtres, ni plafond du jour.
+            queue = characters
+            results["new"] = len(queue)
+            log(f"{len(queue)} bot(s) envoyé(s) à la demande."
                 + (" [SIMULATION]" if dry_run else ""))
         else:
-            log(f"{len(queue)} bot(s) à traiter."
-                + (" [SIMULATION]" if dry_run else ""))
+            pending = [c for c in characters if not state.is_seen(c["id"])]
+
+            # Les sondages, annonces et cartes de mise à jour ne sont pas des
+            # personnages : on les reconnaît à leur nombre de jetons dérisoire.
+            # Le compte figure sur la carte, donc filtrer ici évite d'ouvrir des
+            # centaines de fiches pour rien.
+            if min_tokens:
+                too_small = [c for c in pending
+                             if c.get("tokens") is not None and c["tokens"] < min_tokens]
+                pending = [c for c in pending
+                           if c.get("tokens") is None or c["tokens"] >= min_tokens]
+                if too_small:
+                    log(f"{len(too_small)} élément(s) sous {min_tokens} jetons "
+                        "ignoré(s) — sondages, annonces, brouillons.")
+                    results["too_small"] = len(too_small)
+
+            # Ne transférer que ce qui est déjà public sur Janitor. Un bot dont la
+            # visibilité est inconnue est **conservé** : l'écarter reviendrait à
+            # perdre silencieusement un bot légitime, et de toute façon la
+            # conversion ne publie que sur un `is_public` explicitement vrai.
+            if settings.get("public_only", True):
+                private = [c for c in pending if c.get("is_public") is False]
+                pending = [c for c in pending if c.get("is_public") is not False]
+                if private:
+                    log(f"{len(private)} bot(s) privé(s) sur Janitor ignoré(s).")
+                    results["private"] = len(private)
+
+            if not pending:
+                log("Aucun nouveau bot à synchroniser.")
+                return results
+
+            excluded = [c for c in pending if season_excluded(c.get("name"), settings)]
+            if excluded:
+                pending = [c for c in pending if c not in excluded]
+                log(f"{len(excluded)} bot(s) écarté(s) par les limites de saison : "
+                    + ", ".join(c["name"][:40] for c in excluded[:4])
+                    + (" …" if len(excluded) > 4 else ""))
+                results["season_excluded"] = len(excluded)
+
+            # Du plus récent au plus ancien : les bots récents sont ceux qu'on veut
+            # voir arriver en premier sur Saucepan. Les fiches sans date passent en
+            # dernier plutôt que d'être écartées.
+            pending.sort(key=lambda c: c.get("created_at") or "", reverse=True)
+
+            results["new"] = len(pending)
+
+            # On n'envoie qu'un petit lot par exécution : mieux vaut étaler sur
+            # plusieurs jours que risquer une limitation côté Saucepan. Les autres
+            # restent en file et repartiront au prochain passage.
+            # Un plafond de 0 signifie « aucun bot », pas « sans limite » : c'est
+            # la lecture attendue de --limit 0, et l'inverse enverrait la file
+            # entière d'un coup. Seule l'absence de valeur lève le plafond.
+            queue = pending
+            if daily_limit is not None and daily_limit >= 0:
+                queue = pending[:daily_limit]
+                results["queued"] = len(pending) - len(queue)
+
+            if not queue:
+                log(f"{len(pending)} bot(s) en attente, plafond du jour à "
+                    f"{daily_limit} — rien à envoyer.")
+                return results
+
+            if results.get("queued"):
+                log(f"{len(pending)} bot(s) en attente — {len(queue)} traité(s) "
+                    f"aujourd'hui, {results['queued']} pour les jours suivants."
+                    + (" [SIMULATION]" if dry_run else ""))
+            else:
+                log(f"{len(queue)} bot(s) à traiter."
+                    + (" [SIMULATION]" if dry_run else ""))
 
         for index, char in enumerate(queue, 1):
             cid = char["id"]
@@ -193,7 +202,10 @@ def _full_sync(settings, log, first_run_seed=False, dry_run=False):
             log(f"─── [{index}/{len(queue)}] {label}" + (f" · {char['tokens']} jetons" if char.get("tokens") else ""))
 
             try:
-                fiche = janitor.fetch_character(driver, cid, edit_template, log)
+                # Un bot envoyé à la demande peut ne pas vous appartenir.
+                fetch = janitor.fetch_any_character if forced else janitor.fetch_character
+                fiche = fetch(driver, cid, edit_template, log)
+                label = fiche.get("name") or label
 
                 # Saucepan exige une image de profil, et Janitor ne donne qu'un
                 # nom de fichier sur son CDN : on rapatrie l'avatar pour le
@@ -376,3 +388,13 @@ def open_login_pages(settings, log):
         driver.page.goto(config.JANITOR_ORIGIN, wait_until="domcontentloaded")
         other = driver.page.context.new_page()
         other.goto(SAUCEPAN_HOME, wait_until="domcontentloaded")
+
+
+def sync_urls(settings, log, urls, dry_run=False):
+    """Envoie sur Saucepan les bots Janitor désignés par leur adresse.
+
+    N'importe quel bot, sans les règles du cycle automatique : saisons
+    écartées, bots privés, petits bots, plafond du jour, déjà synchronisé.
+    """
+    ids = list(dict.fromkeys(card.char_id_from(u) for u in urls))
+    return full_sync(settings, log, dry_run=dry_run, forced=ids)

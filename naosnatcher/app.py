@@ -39,6 +39,7 @@ class MainWindow(QMainWindow):
 
         tabs = QTabWidget()
         tabs.addTab(self._config_tab(), "Configuration")
+        tabs.addTab(self._send_tab(), "Envoyer un bot")
         tabs.addTab(self._cards_tab(), "Cartes de personnage")
         tabs.addTab(card_editor.CardEditor(self), "Créer une carte")
         tabs.addTab(self._log_tab(), "Journal")
@@ -103,6 +104,14 @@ class MainWindow(QMainWindow):
             r.addWidget(field, 6)
             field.editingFinished.connect(
                 lambda f=field, k=key: self._save(k, f.text().strip()))
+            if field is self.janitor_url_field:
+                # Verrouillée : une adresse fausse ferait échouer chaque cycle.
+                field.setReadOnly(True)
+                self.list_lock = QPushButton("🔒")
+                self.list_lock.setCheckable(True)
+                self.list_lock.setToolTip("Déverrouiller pour modifier l'adresse")
+                self.list_lock.toggled.connect(self._toggle_list_lock)
+                r.addWidget(self.list_lock)
             ul.addLayout(r)
         layout.addWidget(urls)
 
@@ -199,6 +208,60 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         return w
 
+    def _toggle_list_lock(self, unlocked):
+        self.janitor_url_field.setReadOnly(not unlocked)
+        self.list_lock.setText("🔓" if unlocked else "🔒")
+        if not unlocked:
+            self._save("janitor_list_url", self.janitor_url_field.text().strip())
+
+    def _send_tab(self):
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.addWidget(QLabel(
+            "Collez l'adresse d'un bot Janitor — n'importe lequel — pour l'envoyer "
+            "sur Saucepan tout de suite.\nAucune règle de la synchronisation "
+            "automatique ne s'applique : saisons écartées, bots privés, plafond "
+            "du jour, bot déjà envoyé."))
+        self.send_urls = QPlainTextEdit()
+        self.send_urls.setPlaceholderText(
+            "https://janitorai.com/characters/…\n(une adresse par ligne)")
+        layout.addWidget(self.send_urls)
+        row = QHBoxLayout()
+        self.send_dry_btn = QPushButton("Simulation (ne modifie rien)")
+        self.send_dry_btn.clicked.connect(lambda: self._send_urls(dry_run=True))
+        self.send_btn = QPushButton("Envoyer sur Saucepan")
+        self.send_btn.clicked.connect(lambda: self._send_urls())
+        row.addWidget(self.send_dry_btn)
+        row.addWidget(self.send_btn)
+        row.addStretch(1)
+        layout.addLayout(row)
+        layout.addStretch(1)
+        return w
+
+    def _send_urls(self, dry_run=False):
+        urls = [u.strip() for u in self.send_urls.toPlainText().splitlines() if u.strip()]
+        if not urls:
+            QMessageBox.information(self, "Naosnatcher",
+                                    "Collez d'abord l'adresse d'un bot Janitor.")
+            return
+        if self._busy():
+            self.log("Une tâche est déjà en cours — demande ignorée.")
+            return
+        self.settings = state.load_settings()
+        self.log(f"═══ Envoi à la demande ({len(urls)})"
+                 + (" — simulation" if dry_run else ""))
+        self.tabs.setCurrentIndex(self.tabs.count() - 1)
+        self._start(sync.sync_urls, self.settings, urls=urls, dry_run=dry_run,
+                    on_finished=self._on_send_finished)
+
+    def _on_send_finished(self, result):
+        # Pas de `last_run` ici : un envoi manuel ne remplace pas le cycle du jour.
+        self._cleanup_thread()
+        r = result or {}
+        self.log(f"✅ Envoi terminé : {r.get('ok', 0)} réussi(s), "
+                 f"{r.get('skipped', 0)} simulé(s), {r.get('failed', 0)} échec(s).")
+        self._fill_card_list()
+
     def _cards_tab(self):
         w = QWidget()
         layout = QVBoxLayout(w)
@@ -293,7 +356,7 @@ class MainWindow(QMainWindow):
             return
         self.settings = state.load_settings()
         self.log(f"═══ Cartes de personnage ({len(char_ids) + len(urls)})")
-        self.tabs.setCurrentIndex(2)
+        self.tabs.setCurrentIndex(self.tabs.count() - 1)
         self._start(sync.make_cards, self.settings,
                     char_ids=list(char_ids), urls=list(urls),
                     on_finished=self._on_cards_finished)
@@ -329,7 +392,7 @@ class MainWindow(QMainWindow):
         if not self._followup or self._busy():
             return
         step = self._followup.pop(0)
-        self.tabs.setCurrentIndex(2)
+        self.tabs.setCurrentIndex(self.tabs.count() - 1)
         if step == "seed":
             self.run_sync(seed=True)
         elif step == "dry_run":
@@ -431,6 +494,7 @@ class MainWindow(QMainWindow):
 
     def _set_running(self, running):
         for b in (self.run_btn, self.dry_btn, self.seed_btn,
+                  self.send_btn, self.send_dry_btn,
                   self.card_url_btn, self.card_list_btn):
             b.setEnabled(not running)
 

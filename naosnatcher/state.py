@@ -96,6 +96,15 @@ def load_settings():
     s = dict(DEFAULT_SETTINGS)
     s.update(_read(config.SETTINGS_FILE, {}))
 
+    # Migration unique (0.3.0) : l'adresse de la liste Janitor est désormais
+    # verrouillée ; on remet la bonne à ceux qui l'avaient modifiée. Une
+    # installation pas encore configurée n'est pas touchée : l'assistant s'en
+    # charge.
+    if s.get("janitor_list_url") and not s.get("list_url_reset_0_3"):
+        s["janitor_list_url"] = config.JANITOR_MY_CHARACTERS
+        s["list_url_reset_0_3"] = True
+        save_settings(s)
+
     # Migration : remplacer un gabarit d'édition devenu faux.
     if s.get("janitor_edit_template") in config.JANITOR_EDIT_URL_OBSOLETE:
         s["janitor_edit_template"] = config.JANITOR_EDIT_URL
